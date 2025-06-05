@@ -1,5 +1,45 @@
 # OpenShift CLI (oc) Cheat Sheet
 
+## Installation and Setup
+
+### Installing Bash Completion
+```bash
+# Install bash completion for oc (Linux)
+oc completion bash | sudo tee /etc/bash_completion.d/oc > /dev/null
+
+# Install for current user only (Linux)
+oc completion bash > ~/.oc_completion
+echo 'source ~/.oc_completion' >> ~/.bashrc
+
+# Install on macOS with Homebrew
+brew install bash-completion
+oc completion bash > $(brew --prefix)/etc/bash_completion.d/oc
+
+# Install on macOS manually
+oc completion bash > ~/.oc_completion
+echo 'source ~/.oc_completion' >> ~/.bash_profile
+
+# For zsh users
+oc completion zsh > ~/.oc_completion_zsh
+echo 'source ~/.oc_completion_zsh' >> ~/.zshrc
+
+# Verify completion is working (restart shell first)
+oc get <TAB><TAB>
+oc describe pod <TAB><TAB>
+```
+
+### Shell Setup
+```bash
+# Add oc to your PATH if not already there
+export PATH=$PATH:/path/to/oc
+
+# Set default editor for oc edit commands
+export EDITOR=vim
+
+# Enable kubectl compatibility mode
+alias kubectl=oc
+```
+
 ## Getting Started
 
 ### Login and Authentication
