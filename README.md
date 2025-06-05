@@ -267,6 +267,260 @@ oc cp my-file.txt my-pod-name:/tmp/
 oc cp my-pod-name:/tmp/my-file.txt ./local-file.txt
 ```
 
+### Creating Kubeconfig Files for Users
+```bash
+# Extract current kubeconfig cluster info
+oc config view --minify --raw > my-cluster-config.yaml
+
+# Create kubeconfig for service account
+oc create serviceaccount my-service-account
+oc create clusterrolebinding my-service-account-binding --clusterrole=view --serviceaccount=default:my-service-account
+
+# Get service account token (OpenShift 4.11+)
+TOKEN=$(oc create token my-service-account)
+
+# Get cluster info for kubeconfig
+CLUSTER_NAME=$(oc config view --minify -o jsonpath='{.clusters[0].name}')
+CLUSTER_SERVER=$(oc config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+CLUSTER_CA=$(oc config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+
+# Create kubeconfig file for service account
+cat > service-account-kubeconfig.yaml << EOF
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: ${CLUSTER_CA}
+    server: ${CLUSTER_SERVER}
+  name: ${CLUSTER_NAME}
+contexts:
+- context:
+    cluster: ${CLUSTER_NAME}
+    user: my-service-account
+    namespace: default
+  name: my-service-account-context
+current-context: my-service-account-context
+users:
+- name: my-service-account
+  user:
+    token: ${TOKEN}
+EOF
+
+# Test the new kubeconfig
+KUBECONFIG=service-account-kubeconfig.yaml oc get pods
+
+# Create kubeconfig for regular user (certificate-based)
+# First, create a certificate signing request
+openssl genrsa -out myuser.key 2048
+openssl req -new -key myuser.key -out myuser.csr -subj "/CN=myuser/O=mygroup"
+
+# Create CSR in OpenShift
+cat > csr.yaml << EOF
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: myuser-csr
+spec:
+  request: $(cat myuser.csr | base64 | tr -d '\n')
+  signerName: kubernetes.io/kube-apiserver-client
+  usages:
+  - client auth
+EOF
+
+oc apply -f csr.yaml
+
+# Approve the CSR (requires admin privileges)
+oc certificate approve myuser-csr
+
+# Get the signed certificate
+oc get csr myuser-csr -o jsonpath='{.status.certificate}' | base64 -d > myuser.crt
+
+# Create kubeconfig for certificate-based user
+cat > user-kubeconfig.yaml << EOF
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: ${CLUSTER_CA}
+    server: ${CLUSTER_SERVER}
+  name: ${CLUSTER_NAME}
+contexts:
+- context:
+    cluster: ${CLUSTER_NAME}
+    user: myuser
+    namespace: default
+  name: myuser-context
+current-context: myuser-context
+users:
+- name: myuser
+  user:
+    client-certificate-data: $(cat myuser.crt | base64 | tr -d '\n')
+    client-key-data: $(cat myuser.key | base64 | tr -d '\n')
+EOF
+```
+
+### Managing Multiple Kubeconfig Files
+```bash
+# Merge kubeconfig files
+KUBECONFIG=~/.kube/config:./new-config.yaml oc config view --merge --flatten > merged-config.yaml
+
+# Switch between different kubeconfig files
+export KUBECONFIG=./service-account-kubeconfig.yaml
+oc get pods
+
+# Use specific kubeconfig for single command
+KUBECONFIG=./user-kubeconfig.yaml oc get nodes
+
+# Set default kubeconfig location
+export KUBECONFIG=~/.kube/my-custom-config
+
+# Copy context from one kubeconfig to another
+oc config use-context source-context
+oc config view --minify --raw > temp-context.yaml
+KUBECONFIG=~/.kube/config:temp-context.yaml oc config view --merge --flatten > ~/.kube/config
+```
+
+### Token Management for Service Accounts
+```bash
+# Create long-lived token secret (OpenShift 4.10 and earlier method)
+cat > sa-token-secret.yaml << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-service-account-token
+  annotations:
+    kubernetes.io/service-account.name: my-service-account
+type: kubernetes.io/service-account-token
+EOF
+
+oc apply -f sa-token-secret.yaml
+
+# Get token from secret
+TOKEN=$(oc get secret my-service-account-token -o jsonpath='{.data.token}' | base64 -d)
+
+# Create temporary token (expires after specified time)
+oc create token my-service-account --duration=24h
+
+# Create token for specific audience
+oc create token my-service-account --audience=my-application
+```
+
+## RBAC and Security
+
+### User Impersonation
+```bash
+# Impersonate another user
+oc --as=username get pods
+
+# Impersonate user with specific group
+oc --as=username --as-group=system:authenticated get pods
+
+# Impersonate service account
+oc --as=system:serviceaccount:namespace:serviceaccount-name get pods
+
+# Test what you can do as another user
+oc --as=username auth can-i create pods
+
+# Check permissions across all namespaces as another user
+oc --as=username auth can-i create pods --all-namespaces
+```
+
+### Permission Analysis
+```bash
+# Check what a user can do (requires who-can plugin)
+oc who-can create pods
+
+# Check who can perform action in specific namespace
+oc who-can create pods -n my-namespace
+
+# Check who can perform action on specific resource
+oc who-can get pod/my-pod
+
+# List who can perform cluster-wide actions
+oc who-can create clusterroles
+
+# Check permissions for service accounts
+oc who-can create pods --as=system:serviceaccount:default:my-sa
+
+# Get all users who can perform any action on a resource type
+oc who-can '*' pods
+```
+
+### Current User Permissions
+```bash
+# Check if current user can perform an action
+oc auth can-i create pods
+
+# Check permissions in specific namespace
+oc auth can-i create pods -n my-namespace
+
+# Check cluster-wide permissions
+oc auth can-i create clusterroles
+
+# List all permissions for current user
+oc auth can-i --list
+
+# Check permissions for specific resource
+oc auth can-i get pod/my-pod
+
+# Check with specific verb
+oc auth can-i delete deployments.apps
+```
+
+## API Documentation and Resource Discovery
+
+### Understanding Resources with oc explain
+```bash
+# Get basic information about a resource type
+oc explain pod
+
+# Get detailed field descriptions
+oc explain pod.spec
+
+# Explore nested fields
+oc explain pod.spec.containers
+
+# Get all available fields for a resource
+oc explain pod --recursive
+
+# Explain custom resources
+oc explain route.spec
+
+# Get API version information
+oc explain deployment.apps/v1
+
+# Explore specific field with examples
+oc explain pod.spec.containers.resources
+
+# Get information about cluster-scoped resources
+oc explain clusterrole
+
+# Explain network-related resources
+oc explain networkpolicy.spec
+oc explain service.spec.ports
+```
+
+### API Resource Discovery
+```bash
+# List all available API resources
+oc api-resources
+
+# Get API resources with their short names
+oc api-resources --namespaced=true
+
+# List cluster-scoped resources only
+oc api-resources --namespaced=false
+
+# Get API versions
+oc api-versions
+
+# Find resources by kind
+oc api-resources | grep -i network
+
+# Get detailed API resource information
+oc api-resources -o wide
+```
+
 ## Resource Management
 
 ### Creating and Applying Resources
